@@ -24,8 +24,17 @@ type Metrics = {
   pitch: number | null;
   note: string;
   noteIndex: number;
+  notes: DetectedNote[];
+  chord: string;
   onset: boolean;
   time: number;
+};
+
+type DetectedNote = {
+  note: string;
+  index: number;
+  frequency: number;
+  strength: number;
 };
 
 type Particle = {
@@ -49,16 +58,13 @@ type DrawState = {
 };
 
 const MODES: Array<{ id: ModeId; name: string; tag: string }> = [
-  { id: "typograph", name: "Type Weather", tag: "spoken ink" },
-  { id: "contours", name: "Velvet Topography", tag: "terrain" },
-  { id: "lissajous", name: "Lissajous Chapel", tag: "orbit" },
-  { id: "circuit", name: "Circuit Choir", tag: "signal" },
-  { id: "koi", name: "Koi Notation", tag: "ribbons" },
-  { id: "seismo", name: "Brutalist Seismograph", tag: "print" },
-  { id: "shrine", name: "Glass Shrine", tag: "stained" },
-  { id: "rain", name: "Pixel Rain Psalm", tag: "glyph storm" },
-  { id: "gravity", name: "Gravity Bloom", tag: "field" },
-  { id: "ink", name: "Ink Score", tag: "wet score" },
+  { id: "typograph", name: "Silent Room", tag: "minimal" },
+  { id: "lissajous", name: "Whitney Chords", tag: "harmony" },
+  { id: "contours", name: "Reaction Bloom", tag: "morphogens" },
+  { id: "koi", name: "Spectral Loom", tag: "woven chord" },
+  { id: "rain", name: "Cellular Storm", tag: "automata" },
+  { id: "circuit", name: "Signal City", tag: "brutal grid" },
+  { id: "ink", name: "Black Mass", tag: "chaos ink" },
 ];
 
 const NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
@@ -75,10 +81,55 @@ function lerp(a: number, b: number, t: number) {
 
 function noteFromPitch(freq: number | null) {
   if (!freq || !Number.isFinite(freq)) return { note: "—", index: 0 };
+  return notePartsFromFrequency(freq);
+}
+
+function notePartsFromFrequency(freq: number) {
   const midi = Math.round(69 + 12 * Math.log2(freq / 440));
   const octave = Math.floor(midi / 12) - 1;
   const index = ((midi % 12) + 12) % 12;
   return { note: `${NOTE_NAMES[index]}${octave}`, index };
+}
+
+function detectSpectrumNotes(freqData: Uint8Array, sampleRate: number, fftSize: number): DetectedNote[] {
+  const nyquist = sampleRate / 2;
+  const minBin = Math.max(2, Math.floor((70 / nyquist) * freqData.length));
+  const maxBin = Math.min(freqData.length - 2, Math.ceil((1800 / nyquist) * freqData.length));
+  let maxValue = 0;
+  let sum = 0;
+  let count = 0;
+  for (let i = minBin; i <= maxBin; i++) {
+    const value = freqData[i] / 255;
+    maxValue = Math.max(maxValue, value);
+    sum += value;
+    count++;
+  }
+  const avg = count ? sum / count : 0;
+  const threshold = Math.max(0.08, avg * 2.2, maxValue * 0.28);
+  const peaks: DetectedNote[] = [];
+
+  for (let i = minBin; i <= maxBin; i++) {
+    const value = freqData[i] / 255;
+    if (value < threshold || value < freqData[i - 1] / 255 || value < freqData[i + 1] / 255) continue;
+    const frequency = (i * sampleRate) / fftSize;
+    const parts = notePartsFromFrequency(frequency);
+    peaks.push({ ...parts, frequency, strength: value });
+  }
+
+  peaks.sort((a, b) => b.strength - a.strength);
+  const byPitchClass = new Map<number, DetectedNote>();
+  for (const peak of peaks) {
+    const existing = byPitchClass.get(peak.index);
+    if (!existing || peak.strength > existing.strength) byPitchClass.set(peak.index, peak);
+    if (byPitchClass.size >= 7) break;
+  }
+
+  return [...byPitchClass.values()].sort((a, b) => b.strength - a.strength).slice(0, 6);
+}
+
+function labelChord(notes: DetectedNote[], fallback: string) {
+  if (notes.length >= 2) return notes.map((n) => n.note.replace(/\d/g, "")).join(" ");
+  return fallback;
 }
 
 function autoCorrelate(buffer: Float32Array, sampleRate: number) {
@@ -140,6 +191,12 @@ function bandEnergy(freqData: Uint8Array, start: number, end: number) {
   return count ? total / count : 0;
 }
 
+function liftedFallbackStrength(buffer: Float32Array) {
+  let rms = 0;
+  for (let i = 0; i < buffer.length; i++) rms += buffer[i] * buffer[i];
+  return clamp(Math.sqrt(rms / buffer.length) * 8);
+}
+
 function makeSilentMetrics(time: number): Metrics {
   return {
     rms: 0,
@@ -150,6 +207,8 @@ function makeSilentMetrics(time: number): Metrics {
     pitch: null,
     note: "—",
     noteIndex: 0,
+    notes: [],
+    chord: "—",
     onset: false,
     time,
   };
@@ -203,7 +262,7 @@ function spawn(state: DrawState, metrics: Metrics, w: number, h: number, count =
       max: 0.75 + Math.random() * 1.4,
       size: 10 + Math.random() * 42 + metrics.rms * 90,
       hue: noteHue,
-      text: Math.random() > 0.35 ? metrics.note : WORDS[Math.floor(Math.random() * WORDS.length)],
+      text: Math.random() > 0.35 ? metrics.chord : WORDS[Math.floor(Math.random() * WORDS.length)],
       angle: (Math.random() - 0.5) * Math.PI,
       note: metrics.note,
     });
@@ -254,34 +313,41 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
   if (metrics.onset) spawn(state, metrics, w, h, mode === "typograph" ? 8 : 4);
 
   if (mode === "typograph") {
-    drawBackground(ctx, w, h, "#f3ecd9");
-    grain(ctx, w, h, 0.08);
-    ctx.save();
-    ctx.globalCompositeOperation = "multiply";
-    ctx.font = `900 ${Math.min(w, h) * (0.34 + metrics.rms * 0.08)}px Georgia, serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = `hsla(${metrics.noteIndex * 32}, 70%, 28%, .18)`;
-    ctx.fillText(metrics.note.replace("—", "SONIC"), w / 2, h / 2);
-    ctx.restore();
-    const cols = Math.max(5, Math.floor(w / 150));
-    for (let c = 0; c < cols; c++) {
-      const x = (c + 0.5) * (w / cols);
-      for (let i = 0; i < 18; i++) {
-        const word = WORDS[(i + c + metrics.noteIndex) % WORDS.length];
-        const y = ((i * 58 + metrics.time * (18 + metrics.treble * 90) + c * 37) % (h + 120)) - 60;
-        const amp = waveAt(waveform, i * 73 + c * 17);
-        ctx.save();
-        ctx.translate(x + amp * (28 + metrics.mid * 90), y);
-        ctx.rotate(amp * 0.18);
-        ctx.font = `${12 + i * 0.8 + metrics.rms * 18}px ui-monospace, monospace`;
-        ctx.fillStyle = i % 4 === 0 ? "#111" : `hsla(${210 + c * 24}, 75%, 32%, .58)`;
-        ctx.fillText(`${word} / ${metrics.note}`, 0, 0);
-        ctx.restore();
-      }
+    drawBackground(ctx, w, h, "#f7f4ea");
+    if (metrics.rms < 0.025) {
+      ctx.fillStyle = "rgba(10, 10, 9, .34)";
+      ctx.fillRect(w * 0.5 - 0.5, h * 0.5 - 22, 1, 44);
+      return;
     }
-    drawParticles(ctx, state, dt, "text");
-    vignette(ctx, w, h, 0.28);
+    const cx = w * 0.5;
+    const cy = h * 0.5;
+    ctx.strokeStyle = "rgba(9, 9, 8, .82)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, h * 0.12);
+    ctx.lineTo(cx, h * 0.88);
+    ctx.stroke();
+    metrics.notes.forEach((note, i) => {
+      const angle = -Math.PI / 2 + (i / Math.max(1, metrics.notes.length - 1)) * Math.PI;
+      const radius = Math.min(w, h) * (0.08 + note.strength * 0.28);
+      const x = cx + Math.cos(angle) * radius;
+      const y = cy + Math.sin(angle) * radius;
+      ctx.fillStyle = `hsla(${note.index * 30}, 75%, 38%, ${0.28 + note.strength * 0.55})`;
+      ctx.beginPath();
+      ctx.arc(x, y, 2 + note.strength * 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.font = "11px ui-monospace, monospace";
+      ctx.fillStyle = "rgba(9,9,8,.58)";
+      ctx.fillText(note.note, x + 12, y + 4);
+    });
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(Math.sin(metrics.time * 0.5) * 0.02);
+    ctx.font = `${10 + metrics.rms * 18}px ui-monospace, monospace`;
+    ctx.fillStyle = "rgba(9,9,8,.56)";
+    ctx.textAlign = "center";
+    ctx.fillText(metrics.chord, 0, 58 + metrics.rms * 28);
+    ctx.restore();
     return;
   }
 
@@ -327,19 +393,21 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
     ctx.save();
     ctx.translate(w / 2, h / 2);
     ctx.globalCompositeOperation = "lighter";
-    for (let ring = 0; ring < 9; ring++) {
+    const orbitNotes = metrics.notes.length ? metrics.notes : [{ note: metrics.note, index: metrics.noteIndex, frequency: metrics.pitch ?? 220, strength: metrics.rms }];
+    for (let ring = 0; ring < 14; ring++) {
+      const harmonic = orbitNotes[ring % orbitNotes.length];
       ctx.beginPath();
-      const a = 2 + (metrics.noteIndex % 5);
-      const b = 3 + ((metrics.noteIndex + ring) % 7);
-      const radius = Math.min(w, h) * (0.1 + ring * 0.04 + metrics.rms * 0.1);
+      const a = 2 + (harmonic.index % 5);
+      const b = 3 + ((harmonic.index + ring) % 7);
+      const radius = Math.min(w, h) * (0.075 + ring * 0.031 + harmonic.strength * 0.12);
       for (let i = 0; i <= 640; i++) {
         const t = (i / 640) * Math.PI * 2;
-        const x = Math.sin(a * t + metrics.time * 0.5) * radius * (1 + metrics.bass * 0.6);
-        const y = Math.sin(b * t + ring + metrics.time * 0.3) * radius * (1 + metrics.treble * 0.5);
+        const x = Math.sin(a * t + metrics.time * (0.35 + harmonic.strength * 0.22)) * radius * (1 + metrics.bass * 0.6);
+        const y = Math.sin(b * t + ring + metrics.time * 0.28) * radius * (1 + metrics.treble * 0.5);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
-      glowLine(ctx, `hsla(${170 + ring * 18 + metrics.noteIndex * 9}, 95%, 64%, ${0.12 + ring * 0.05})`, 16, 0.7 + metrics.mid * 4);
+      glowLine(ctx, `hsla(${170 + ring * 18 + harmonic.index * 13}, 95%, 64%, ${0.11 + harmonic.strength * 0.28})`, 16, 0.6 + harmonic.strength * 4);
       ctx.stroke();
     }
     ctx.restore();
@@ -383,25 +451,27 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
     water.addColorStop(1, "rgba(130, 42, 31, .18)");
     ctx.fillStyle = water;
     ctx.fillRect(0, 0, w, h);
-    for (let ribbon = 0; ribbon < 14; ribbon++) {
+    const threads = metrics.notes.length ? metrics.notes : [{ note: metrics.note, index: metrics.noteIndex, frequency: metrics.pitch ?? 220, strength: metrics.rms }];
+    for (let ribbon = 0; ribbon < 18; ribbon++) {
+      const thread = threads[ribbon % threads.length];
       ctx.beginPath();
       for (let i = 0; i < 180; i++) {
         const t = i / 179;
         const x = t * w;
-        const y = h * (0.12 + ribbon * 0.064) + Math.sin(t * 8 + metrics.time * (0.7 + ribbon * 0.03) + ribbon) * (18 + metrics.bass * 110);
-        const sway = Math.sin(t * 18 + metrics.noteIndex) * metrics.treble * 55;
+        const y = h * (0.1 + ribbon * 0.05) + Math.sin(t * (6 + thread.index * 0.4) + metrics.time * (0.5 + thread.strength * 0.6) + ribbon) * (14 + metrics.bass * 120);
+        const sway = Math.sin(t * 20 + thread.index + ribbon) * metrics.treble * 70;
         if (i === 0) ctx.moveTo(x, y + sway);
         else ctx.lineTo(x, y + sway);
       }
-      glowLine(ctx, `hsla(${18 + ribbon * 18 + metrics.noteIndex * 4}, 95%, 62%, ${0.18 + metrics.mid * 0.34})`, 10, 2 + metrics.rms * 20);
+      glowLine(ctx, `hsla(${18 + ribbon * 13 + thread.index * 22}, 95%, 62%, ${0.14 + thread.strength * 0.42})`, 10, 1.5 + thread.strength * 18);
       ctx.stroke();
       for (let dot = 0; dot < 7; dot++) {
         const t = (dot + 1) / 8;
         const x = t * w;
-        const y = h * (0.12 + ribbon * 0.064) + Math.sin(t * 8 + metrics.time * (0.7 + ribbon * 0.03) + ribbon) * (18 + metrics.bass * 110);
-        ctx.fillStyle = `hsla(${40 + ribbon * 13}, 90%, 70%, .16)`;
+        const y = h * (0.1 + ribbon * 0.05) + Math.sin(t * (6 + thread.index * 0.4) + metrics.time * (0.5 + thread.strength * 0.6) + ribbon) * (14 + metrics.bass * 120);
+        ctx.fillStyle = `hsla(${40 + thread.index * 24}, 90%, 70%, .18)`;
         ctx.beginPath();
-        ctx.ellipse(x, y, 3 + metrics.rms * 18, 1.5 + metrics.treble * 6, 0, 0, Math.PI * 2);
+        ctx.ellipse(x, y, 3 + thread.strength * 18, 1.5 + metrics.treble * 6, 0, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -532,25 +602,34 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
   }
 
   if (mode === "ink") {
-    drawBackground(ctx, w, h, "#f4ead6");
-    grain(ctx, w, h, 0.09);
-    if (metrics.onset) spawn(state, metrics, w, h, 10);
+    drawBackground(ctx, w, h, "#050303");
+    if (metrics.onset) spawn(state, metrics, w, h, 18);
+    ctx.globalCompositeOperation = "lighter";
+    const chordNotes = metrics.notes.length ? metrics.notes : [{ note: metrics.note, index: metrics.noteIndex, frequency: metrics.pitch ?? 220, strength: metrics.rms }];
+    for (let n = 0; n < chordNotes.length; n++) {
+      const note = chordNotes[n];
+      const cx = w * (0.2 + ((note.index * 0.071 + n * 0.17) % 0.65));
+      const cy = h * (0.2 + ((note.index * 0.113 + n * 0.23) % 0.6));
+      for (let strand = 0; strand < 22; strand++) {
+        ctx.beginPath();
+        for (let i = 0; i < 120; i++) {
+          const t = i / 119;
+          const a = t * Math.PI * 2 * (1.5 + note.index * 0.08) + metrics.time * (0.35 + note.strength);
+          const r = Math.pow(t, 0.55) * Math.min(w, h) * (0.12 + note.strength * 0.24);
+          const noise = Math.sin(i * 0.37 + strand + metrics.time * 2) * (12 + metrics.treble * 80);
+          const x = cx + Math.cos(a + strand) * r + noise;
+          const y = cy + Math.sin(a * 1.7 + strand * 0.3) * r - noise * 0.3;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        glowLine(ctx, `hsla(${note.index * 31 + strand * 9}, 90%, ${45 + note.strength * 30}%, ${0.045 + note.strength * 0.13})`, 18, 0.8 + note.strength * 4);
+        ctx.stroke();
+      }
+    }
+    ctx.shadowBlur = 0;
     drawParticles(ctx, state, dt, "ink");
-    ctx.strokeStyle = "rgba(20, 12, 10, .55)";
-    ctx.lineWidth = 1 + metrics.rms * 6;
-    ctx.beginPath();
-    for (let i = 0; i < waveform.length; i += 3) {
-      const x = (i / waveform.length) * w;
-      const y = h * 0.52 + ((waveform[i] - 128) / 128) * (60 + metrics.rms * 140);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-    ctx.font = "700 11px ui-monospace, monospace";
-    ctx.fillStyle = "rgba(20,12,10,.54)";
-    for (let i = 0; i < 18; i++) {
-      ctx.fillText(metrics.note, 18 + i * 42, h - 28 - Math.sin(i + metrics.time) * metrics.mid * 18);
-    }
+    ctx.globalCompositeOperation = "source-over";
+    vignette(ctx, w, h, 0.74);
   }
 }
 
@@ -620,14 +699,39 @@ function useAudio() {
       for (let i = 0; i < freqData.length; i++) {
         freqData[i] = Math.max(0, 180 * Math.exp(-i / 96) * (0.65 + 0.35 * Math.sin(phase + i * 0.04)));
       }
-      const fakePitch = [220, 246.94, 261.63, 329.63, 392, 440][Math.floor(phase * 2) % 6];
+      const demoChords = [
+        [220, 277.18, 329.63],
+        [196, 246.94, 293.66, 369.99],
+        [261.63, 329.63, 392],
+        [146.83, 220, 293.66, 349.23],
+      ];
+      const fakeChord = demoChords[Math.floor(phase * 1.2) % demoChords.length];
+      const fakePitch = fakeChord[0];
       const note = noteFromPitch(fakePitch);
+      const notes = fakeChord.map((frequency, i) => ({
+        ...notePartsFromFrequency(frequency),
+        frequency,
+        strength: 0.92 - i * 0.1,
+      }));
       const rms = 0.18 + 0.14 * (Math.sin(phase * 3) * 0.5 + 0.5);
       const onset = Math.abs(Math.sin(phase * Math.PI)) > 0.94;
       return {
         waveform,
         freqData,
-        metrics: { rms, bass: 0.48, mid: 0.38, treble: 0.32, centroid: 0.3, pitch: fakePitch, note: note.note, noteIndex: note.index, onset, time },
+        metrics: {
+          rms,
+          bass: 0.48,
+          mid: 0.38,
+          treble: 0.32,
+          centroid: 0.3,
+          pitch: fakePitch,
+          note: note.note,
+          noteIndex: note.index,
+          notes,
+          chord: labelChord(notes, note.note),
+          onset,
+          time,
+        },
       };
     }
 
@@ -640,6 +744,8 @@ function useAudio() {
     analyser.getFloatTimeDomainData(floatWave);
     const pitch = autoCorrelate(floatWave, ctx.sampleRate);
     const note = noteFromPitch(pitch);
+    const spectrumNotes = detectSpectrumNotes(freqData, ctx.sampleRate, analyser.fftSize);
+    const notes = spectrumNotes.length ? spectrumNotes : pitch ? [{ ...note, frequency: pitch, strength: liftedFallbackStrength(floatWave) }] : [];
     let rms = 0;
     for (let i = 0; i < floatWave.length; i++) rms += floatWave[i] * floatWave[i];
     rms = Math.sqrt(rms / floatWave.length);
@@ -669,6 +775,8 @@ function useAudio() {
         pitch,
         note: note.note,
         noteIndex: note.index,
+        notes,
+        chord: labelChord(notes, note.note),
         onset,
         time,
       },
@@ -750,8 +858,8 @@ function App() {
           <h1>{activeMode.name}</h1>
         </div>
         <div className="note-chip">
-          <span>{metrics.note}</span>
-          <small>{Math.round(metrics.rms * 100)}%</small>
+          <span>{metrics.chord}</span>
+          <small>{metrics.notes.length ? metrics.notes.map((n) => n.note).join(" · ") : `${Math.round(metrics.rms * 100)}%`}</small>
         </div>
       </section>
 
