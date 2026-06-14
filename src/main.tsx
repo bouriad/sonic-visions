@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { AudioLines, Mic, Play, Shuffle, Sparkles } from "lucide-react";
+import { AudioLines, Maximize2, Mic, Play, Shuffle, SlidersHorizontal, Sparkles } from "lucide-react";
 import "./styles.css";
 
 type ModeId =
@@ -60,9 +60,9 @@ type DrawState = {
 const MODES: Array<{ id: ModeId; name: string; tag: string }> = [
   { id: "typograph", name: "Silent Room", tag: "minimal" },
   { id: "lissajous", name: "Whitney Chords", tag: "harmony" },
-  { id: "contours", name: "Reaction Bloom", tag: "morphogens" },
+  { id: "contours", name: "Living Painting", tag: "canvas" },
   { id: "koi", name: "Spectral Loom", tag: "woven chord" },
-  { id: "rain", name: "Cellular Storm", tag: "automata" },
+  { id: "rain", name: "Dread Terminal", tag: "text panic" },
   { id: "circuit", name: "Signal City", tag: "brutal grid" },
   { id: "ink", name: "Black Mass", tag: "chaos ink" },
 ];
@@ -352,13 +352,32 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
   }
 
   if (mode === "contours") {
-    drawBackground(ctx, w, h, "#090607");
+    drawBackground(ctx, w, h, "#f1eadc");
+    grain(ctx, w, h, 0.08);
+    const paintNotes = metrics.notes.length ? metrics.notes : [{ note: metrics.note, index: metrics.noteIndex, frequency: metrics.pitch ?? 220, strength: metrics.rms }];
+    ctx.globalCompositeOperation = "multiply";
+    for (let stroke = 0; stroke < 36; stroke++) {
+      const note = paintNotes[stroke % paintNotes.length];
+      ctx.beginPath();
+      for (let i = 0; i < 80; i++) {
+        const t = i / 79;
+        const x = w * ((stroke * 0.071 + t * 0.42 + Math.sin(metrics.time * 0.07 + note.index) * 0.04) % 1);
+        const y = h * (0.18 + ((stroke * 0.113 + note.index * 0.037) % 0.66)) + Math.sin(t * 9 + stroke + metrics.time * (0.25 + note.strength)) * (18 + note.strength * 82);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = `hsla(${note.index * 31 + stroke * 6}, 72%, ${38 + note.strength * 24}%, ${0.08 + note.strength * 0.16})`;
+      ctx.lineWidth = 10 + note.strength * 46;
+      ctx.lineCap = "round";
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = "source-over";
     for (let i = 0; i < 8; i++) {
       const x = w * (0.12 + i * 0.11 + Math.sin(metrics.time * 0.2 + i) * 0.02);
       const y = h * (0.18 + Math.cos(metrics.time * 0.22 + i) * 0.18 + (i % 3) * 0.2);
       const r = Math.min(w, h) * (0.12 + metrics.bass * 0.22 + i * 0.015);
       const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-      g.addColorStop(0, `hsla(${300 + metrics.noteIndex * 12 + i * 18}, 80%, 52%, .34)`);
+      g.addColorStop(0, `hsla(${300 + metrics.noteIndex * 12 + i * 18}, 80%, 52%, .18)`);
       g.addColorStop(1, "rgba(0,0,0,0)");
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, w, h);
@@ -372,12 +391,12 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
         if (x === -step) ctx.moveTo(x, yy);
         else ctx.lineTo(x, yy);
       }
-      glowLine(ctx, `hsla(${250 + metrics.noteIndex * 13}, 90%, ${55 + metrics.treble * 24}%, .44)`, 8, 0.7 + metrics.rms * 4);
+      glowLine(ctx, `hsla(${250 + metrics.noteIndex * 13}, 90%, ${42 + metrics.treble * 24}%, .2)`, 4, 0.5 + metrics.rms * 2);
       ctx.stroke();
     }
     ctx.shadowBlur = 0;
     drawParticles(ctx, state, dt, "ink");
-    vignette(ctx, w, h, 0.62);
+    vignette(ctx, w, h, 0.22);
     return;
   }
 
@@ -557,6 +576,19 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
         ctx.fillText(char, c * 14 + Math.sin(k + metrics.time) * metrics.bass * 6, y - k * 20);
       }
     }
+    const warnings = ["SIGNAL", "NO EXIT", "LISTEN", "ERROR", metrics.chord, "AFTERIMAGE"];
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    for (let i = 0; i < 9; i++) {
+      const text = warnings[(i + metrics.noteIndex) % warnings.length];
+      const y = ((i * h) / 8 + metrics.time * (12 + metrics.rms * 60)) % (h + 80) - 40;
+      ctx.font = `900 ${22 + metrics.rms * 42}px ui-monospace, monospace`;
+      ctx.fillStyle = i % 3 === 0 ? "rgba(255, 40, 68, .28)" : "rgba(235, 245, 228, .12)";
+      ctx.fillText(text, 20 + Math.sin(i + metrics.time) * metrics.treble * 80, y);
+      ctx.fillStyle = "rgba(0,0,0,.62)";
+      ctx.fillRect(12, y + 6, w * (0.25 + ((i * 0.17 + metrics.bass) % 0.55)), 9 + metrics.rms * 12);
+    }
+    ctx.restore();
     vignette(ctx, w, h, 0.65);
     return;
   }
@@ -636,8 +668,10 @@ function drawMode(ctx: CanvasRenderingContext2D, mode: ModeId, metrics: Metrics,
 function useAudio() {
   const [status, setStatus] = useState<"idle" | "mic" | "demo" | "error">("idle");
   const [error, setError] = useState("");
+  const [sensitivity, setSensitivity] = useState(2.8);
   const ctxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const gainRef = useRef<GainNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastRmsRef = useRef(0);
 
@@ -649,7 +683,7 @@ function useAudio() {
       const audioCtx = new AudioContext();
       const source = audioCtx.createMediaStreamSource(stream);
       const inputGain = audioCtx.createGain();
-      inputGain.gain.value = 2.8;
+      inputGain.gain.value = sensitivity;
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 2048;
       analyser.minDecibels = -96;
@@ -659,6 +693,7 @@ function useAudio() {
       inputGain.connect(analyser);
       ctxRef.current = audioCtx;
       analyserRef.current = analyser;
+      gainRef.current = inputGain;
       streamRef.current = stream;
       setStatus("mic");
       setError("");
@@ -680,7 +715,16 @@ function useAudio() {
     void ctxRef.current?.close();
     ctxRef.current = null;
     analyserRef.current = null;
+    gainRef.current = null;
     setStatus("idle");
+  }
+
+  function updateSensitivity(value: number) {
+    const next = clamp(value, 0.8, 7);
+    setSensitivity(next);
+    if (gainRef.current) {
+      gainRef.current.gain.setTargetAtTime(next, ctxRef.current?.currentTime ?? 0, 0.025);
+    }
   }
 
   function read(time: number): { metrics: Metrics; waveform: Uint8Array; freqData: Uint8Array } {
@@ -761,7 +805,8 @@ function useAudio() {
     }
     const centroid = total ? weighted / (freqData.length * total) : 0;
     const liftedRms = clamp(Math.pow(rms * 7.5, 0.72));
-    const onset = rms > 0.008 && rms > lastRmsRef.current * 1.28;
+    const onsetFloor = Math.max(0.0035, 0.014 / sensitivity);
+    const onset = rms > onsetFloor && rms > lastRmsRef.current * 1.22;
     lastRmsRef.current = lerp(lastRmsRef.current, rms, 0.34);
     return {
       waveform,
@@ -783,7 +828,7 @@ function useAudio() {
     };
   }
 
-  return { status, error, startMic, startDemo, stop, read };
+  return { status, error, sensitivity, setSensitivity: updateSensitivity, startMic, startDemo, stop, read };
 }
 
 function App() {
@@ -794,6 +839,7 @@ function App() {
   const audioRef = useRef<ReturnType<typeof useAudio> | null>(null);
   const [mode, setMode] = useState<ModeId>("typograph");
   const [metrics, setMetrics] = useState<Metrics>(makeSilentMetrics(0));
+  const [uiHidden, setUiHidden] = useState(false);
   const audio = useAudio();
   audioRef.current = audio;
 
@@ -809,6 +855,14 @@ function App() {
       audio.startDemo();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      if (!document.fullscreenElement) setUiHidden(false);
+    };
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
   }, []);
 
   useEffect(() => {
@@ -848,11 +902,18 @@ function App() {
     };
   }, [mode]);
 
-  return (
-    <main className="app-shell">
-      <canvas ref={canvasRef} className="visual-canvas" />
+  async function enterArtworkMode() {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen?.();
+    }
+    setUiHidden(true);
+  }
 
-      <section className="top-panel">
+  return (
+    <main className={`app-shell ${uiHidden ? "ui-hidden" : ""}`}>
+      <canvas ref={canvasRef} className="visual-canvas" onClick={() => uiHidden && setUiHidden(false)} />
+
+      <section className="top-panel ui-layer">
         <div>
           <p className="eyebrow">Sonic Visions</p>
           <h1>{activeMode.name}</h1>
@@ -863,13 +924,13 @@ function App() {
         </div>
       </section>
 
-      <section className="meter-panel">
+      <section className="meter-panel ui-layer">
         <div className="meter"><span style={{ width: `${metrics.bass * 100}%` }} /></div>
         <div className="meter"><span style={{ width: `${metrics.mid * 100}%` }} /></div>
         <div className="meter"><span style={{ width: `${metrics.treble * 100}%` }} /></div>
       </section>
 
-      <section className="controls">
+      <section className="controls ui-layer">
         <div className="mode-strip">
           {MODES.map((item) => (
             <button key={item.id} className={item.id === mode ? "selected" : ""} onClick={() => setMode(item.id)}>
@@ -878,6 +939,19 @@ function App() {
             </button>
           ))}
         </div>
+        <label className="sensitivity-control">
+          <SlidersHorizontal size={16} />
+          <span>Sensitivity</span>
+          <input
+            type="range"
+            min="0.8"
+            max="7"
+            step="0.1"
+            value={audio.sensitivity}
+            onChange={(event) => audio.setSensitivity(Number(event.currentTarget.value))}
+          />
+          <strong>{audio.sensitivity.toFixed(1)}x</strong>
+        </label>
         <div className="action-row">
           <button className="action primary" onClick={audio.startMic}>
             <Mic size={18} />
@@ -891,10 +965,14 @@ function App() {
             <Shuffle size={18} />
             Shuffle
           </button>
+          <button className="action" onClick={enterArtworkMode}>
+            <Maximize2 size={18} />
+            Full
+          </button>
         </div>
       </section>
 
-      <section className="status-pill">
+      <section className="status-pill ui-layer">
         {audio.status === "mic" ? <AudioLines size={15} /> : <Sparkles size={15} />}
         <span>{audio.status === "error" ? audio.error : audio.status}</span>
       </section>

@@ -42,6 +42,16 @@ button {
   touch-action: none;
 }
 
+.ui-layer {
+  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
+}
+
+.ui-hidden .ui-layer {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .top-panel {
   position: absolute;
   z-index: 5;
@@ -201,7 +211,7 @@ h1 {
 
 .action-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -217,12 +227,38 @@ h1 {
   background: rgba(255, 255, 255, 0.075);
   backdrop-filter: blur(20px) saturate(1.25);
   font-weight: 720;
+  min-width: 0;
 }
 
 .action.primary {
   color: #10100f;
   background: #a8ffd2;
   border-color: #a8ffd2;
+}
+
+.sensitivity-control {
+  min-height: 42px;
+  margin: 0 2px 8px;
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: 9px;
+  color: rgba(245, 241, 232, 0.76);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.sensitivity-control input {
+  width: 100%;
+  accent-color: #a8ffd2;
+}
+
+.sensitivity-control strong {
+  min-width: 34px;
+  color: #f5f1e8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-align: right;
 }
 
 .status-pill {
@@ -281,6 +317,12 @@ h1 {
   }
 
   .action {
-    font-size: 13px;
+    gap: 5px;
+    font-size: 12px;
+  }
+
+  .action svg {
+    width: 16px;
+    height: 16px;
   }
 }
